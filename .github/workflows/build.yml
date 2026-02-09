@@ -138,6 +138,7 @@ jobs:
             VERSION=$(release/caddy-linux-amd64 version | head -n1 | awk '{print $1}')
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "Release version: ${VERSION}"
 
       - name: Create Release
@@ -149,7 +150,7 @@ jobs:
             ## Caddy with NaiveProxy forwardproxy plugin
 
             **Caddy Version**: `${{ steps.version.outputs.version }}`
-            **Build Date**: ${{ github.run_started_at }}
+            **Build Date**: ${{ steps.version.outputs.date }}
             **Go Version**: 1.23
 
             ### Downloads
