@@ -6,8 +6,9 @@ FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG CADDY_VERSION
-ARG FORWARDPROXY_REPO=github.com/klzgrad/forwardproxy
-ARG FORWARDPROXY_VERSION=naive
+ARG FORWARDPROXY_MODULE=github.com/caddyserver/forwardproxy
+ARG FORWARDPROXY_REPLACEMENT=""
+ARG FORWARDPROXY_VERSION=""
 
 RUN apk add --no-cache git ca-certificates \
     && go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
@@ -16,10 +17,17 @@ WORKDIR /build
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
+    if [ -n "$FORWARDPROXY_REPLACEMENT" ]; then \
+        if [ -n "$FORWARDPROXY_VERSION" ]; then \
+            FORWARDPROXY_WITH="${FORWARDPROXY_MODULE}=${FORWARDPROXY_REPLACEMENT}@${FORWARDPROXY_VERSION}"; \
+        else \
+            FORWARDPROXY_WITH="${FORWARDPROXY_MODULE}=${FORWARDPROXY_REPLACEMENT}"; \
+        fi; \
+    else \
+        FORWARDPROXY_WITH="${FORWARDPROXY_MODULE}"; \
+    fi; \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} CGO_ENABLED=0 \
-    xcaddy build ${CADDY_VERSION} \
-        --with github.com/caddyserver/forwardproxy=${FORWARDPROXY_REPO}@${FORWARDPROXY_VERSION} \
-        --output /build/caddy
+    xcaddy build ${CADDY_VERSION} --with "${FORWARDPROXY_WITH}" --output /build/caddy
 
 FROM alpine:${ALPINE_VERSION}
 

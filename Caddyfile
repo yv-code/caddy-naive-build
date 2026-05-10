@@ -6,5 +6,5 @@
 }
 
 :80 {
-	respond "Caddy with NaiveProxy forwardproxy is running. Mount your own /etc/caddy/Caddyfile to configure." 200
+	respond "Caddy with forwardproxy is running. Mount your own /etc/caddy/Caddyfile to configure." 200
 }

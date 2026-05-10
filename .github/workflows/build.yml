@@ -1,4 +1,4 @@
-name: Build Caddy with NaiveProxy
+name: Build Caddy Docker images
 
 on:
   workflow_dispatch:
@@ -9,18 +9,18 @@ on:
         default: ""
         type: string
       forwardproxy_repo:
-        description: "forwardproxy module replacement repo (Go import path, no scheme)"
+        description: "Naive variant forwardproxy replacement repo (Go import path, no scheme)."
         required: false
         default: "github.com/klzgrad/forwardproxy"
         type: string
       forwardproxy_version:
-        description: "forwardproxy module branch / tag / commit (e.g. naive, v0.0.1, <sha>)"
+        description: "Naive variant forwardproxy replacement branch / tag / commit."
         required: false
         default: "naive"
         type: string
 
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 jobs:
@@ -44,7 +44,7 @@ jobs:
 
           FP_REPO="${{ inputs.forwardproxy_repo }}"
           FP_VERSION="${{ inputs.forwardproxy_version }}"
-          echo "forwardproxy module: ${FP_REPO}@${FP_VERSION}"
+          echo "forwardproxy module (naive variant): ${FP_REPO}@${FP_VERSION}"
 
           {
             echo "caddy_version=${CADDY_VERSION}"
@@ -52,74 +52,23 @@ jobs:
             echo "forwardproxy_version=${FP_VERSION}"
           } >> "$GITHUB_OUTPUT"
 
-  build:
-    needs: resolve-version
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            arch: amd64
-            name: linux-amd64
-          - os: ubuntu-latest
-            arch: arm64
-            name: linux-arm64
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: "1.25"
-          cache: false
-
-      - name: Install xcaddy
-        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-
-      - name: Build Caddy with forwardproxy
-        env:
-          CADDY_VERSION: ${{ needs.resolve-version.outputs.caddy_version }}
-          FORWARDPROXY_REPO: ${{ needs.resolve-version.outputs.forwardproxy_repo }}
-          FORWARDPROXY_VERSION: ${{ needs.resolve-version.outputs.forwardproxy_version }}
-        run: |
-          GOARCH=${{ matrix.arch }} ~/go/bin/xcaddy build "${CADDY_VERSION}" \
-            --with "github.com/caddyserver/forwardproxy=${FORWARDPROXY_REPO}@${FORWARDPROXY_VERSION}"
-
-      - name: Record Caddy version
-        id: caddy_version
-        run: |
-          CADDY_VERSION="${{ needs.resolve-version.outputs.caddy_version }}"
-          echo "version=${CADDY_VERSION}" >> $GITHUB_OUTPUT
-          echo "Caddy version: ${CADDY_VERSION}"
-
-      - name: Rename binary
-        run: mv caddy caddy-${{ matrix.name }}
-
-      - name: Calculate SHA256
-        id: sha256
-        run: |
-          SHA256=$(sha256sum caddy-${{ matrix.name }} | awk '{print $1}')
-          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
-          echo "${SHA256}  caddy-${{ matrix.name }}" > caddy-${{ matrix.name }}.sha256
-          echo "SHA256: ${SHA256}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: caddy-${{ matrix.name }}
-          path: |
-            caddy-${{ matrix.name }}
-            caddy-${{ matrix.name }}.sha256
-
   docker:
     needs: resolve-version
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: plain
+            tag_suffix: ""
+            description: "Caddy server built with the upstream forwardproxy plugin"
+          - variant: naive
+            tag_suffix: "-naive"
+            description: "Caddy server built with the NaiveProxy forwardproxy plugin"
 
     steps:
       - name: Checkout
@@ -145,17 +94,37 @@ jobs:
           echo "name=${IMAGE}" >> $GITHUB_OUTPUT
           echo "Image: ${IMAGE}"
 
+      - name: Compute forwardproxy replacement args
+        id: forwardproxy
+        env:
+          VARIANT: ${{ matrix.variant }}
+          FP_REPO: ${{ needs.resolve-version.outputs.forwardproxy_repo }}
+          FP_VERSION: ${{ needs.resolve-version.outputs.forwardproxy_version }}
+        run: |
+          if [ "$VARIANT" = "naive" ]; then
+            REPLACEMENT="$FP_REPO"
+            VERSION="$FP_VERSION"
+          else
+            REPLACEMENT=""
+            VERSION=""
+          fi
+          {
+            echo "replacement=${REPLACEMENT}"
+            echo "version=${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Variant=${VARIANT}; forwardproxy replacement: ${REPLACEMENT:-upstream}${VERSION:+@${VERSION}}"
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=raw,value=latest
-            type=raw,value=${{ needs.resolve-version.outputs.caddy_version }}
+            type=raw,value=latest${{ matrix.tag_suffix }}
+            type=raw,value=${{ needs.resolve-version.outputs.caddy_version }}${{ matrix.tag_suffix }}
           labels: |
-            org.opencontainers.image.title=Caddy with NaiveProxy
-            org.opencontainers.image.description=Caddy server built with the NaiveProxy forwardproxy plugin
+            org.opencontainers.image.title=Caddy forwardproxy (${{ matrix.variant }})
+            org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.resolve-version.outputs.caddy_version }}
             org.opencontainers.image.licenses=Apache-2.0
@@ -172,104 +141,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             CADDY_VERSION=${{ needs.resolve-version.outputs.caddy_version }}
-            FORWARDPROXY_REPO=${{ needs.resolve-version.outputs.forwardproxy_repo }}
-            FORWARDPROXY_VERSION=${{ needs.resolve-version.outputs.forwardproxy_version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  release:
-    needs: [resolve-version, build, docker]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-
-      - name: Prepare release files
-        run: |
-          mkdir -p release
-          find . -name "caddy-*" -type f -exec mv {} release/ \;
-          cd release
-
-          # Create combined checksums file
-          cat *.sha256 > checksums.txt
-          rm *.sha256
-
-          # List files
-          ls -lh
-
-      - name: Get version
-        id: version
-        run: |
-          VERSION="${{ needs.resolve-version.outputs.caddy_version }}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-          echo "Release version: ${VERSION}"
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: Caddy ${{ steps.version.outputs.version }} with NaiveProxy
-          body: |
-            ## Caddy with NaiveProxy forwardproxy plugin
-
-            **Caddy Version**: `${{ steps.version.outputs.version }}`
-            **Build Date**: ${{ steps.version.outputs.date }}
-            **Go Version**: 1.25
-
-            ### Downloads
-
-            | Platform | File | Size |
-            |----------|------|------|
-            | Linux x64 | [caddy-linux-amd64](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/caddy-linux-amd64) | ~45 MB |
-            | Linux ARM64 | [caddy-linux-arm64](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/caddy-linux-arm64) | ~45 MB |
-            | Checksums | [checksums.txt](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/checksums.txt) | - |
-
-            ### Included Modules
-            - ✅ `http.handlers.forward_proxy` (NaiveProxy fork)
-            - ✅ All standard Caddy modules
-
-            ### Quick Start
-
-            ```bash
-            # Download (x64)
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/caddy-linux-amd64
-
-            # Verify checksum
-            wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/checksums.txt
-            sha256sum -c checksums.txt --ignore-missing
-
-            # Make executable
-            mv caddy-linux-amd64 caddy
-            chmod +x caddy
-
-            # Check version
-            ./caddy version
-
-            # List modules
-            ./caddy list-modules | grep forward_proxy
-            ```
-
-            ### Build Info
-
-            Built with:
-            ```bash
-            xcaddy build ${{ steps.version.outputs.version }} \
-              --with github.com/caddyserver/forwardproxy=${{ needs.resolve-version.outputs.forwardproxy_repo }}@${{ needs.resolve-version.outputs.forwardproxy_version }}
-            ```
-
-            ### Verification
-
-            All binaries include SHA256 checksums in `checksums.txt`. Always verify your download:
-
-            ```bash
-            sha256sum -c checksums.txt --ignore-missing
-            ```
-          files: |
-            release/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            FORWARDPROXY_REPLACEMENT=${{ steps.forwardproxy.outputs.replacement }}
+            FORWARDPROXY_VERSION=${{ steps.forwardproxy.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
