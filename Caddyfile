@@ -1,0 +1,10 @@
+# Default Caddyfile shipped inside the image.
+# Override by mounting your own file to /etc/caddy/Caddyfile.
+
+{
+	admin off
+}
+
+:80 {
+	respond "Caddy with NaiveProxy forwardproxy is running. Mount your own /etc/caddy/Caddyfile to configure." 200
+}

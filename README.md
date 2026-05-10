@@ -2,24 +2,86 @@
 
 Caddy server compiled with [NaiveProxy forwardproxy plugin](https://github.com/klzgrad/forwardproxy).
 
-[![Build Caddy with NaiveProxy](https://github.com/Michaol/caddy-naive/actions/workflows/build.yml/badge.svg)](https://github.com/Michaol/caddy-naive/actions/workflows/build.yml)
+[![Build Caddy with NaiveProxy](https://github.com/yv-code/caddy-naive-build/actions/workflows/build.yml/badge.svg)](https://github.com/yv-code/caddy-naive-build/actions/workflows/build.yml)
 
 ## Features
 
-- ✅ Latest Caddy version (auto-updated)
+- ✅ Latest Caddy version by default when triggering a build
 - ✅ NaiveProxy forwardproxy plugin
-- ✅ Automatic builds via GitHub Actions
+- ✅ Manual builds via GitHub Actions
 - ✅ Multi-architecture support (x64, arm64)
+- ✅ Distributed as both standalone binaries and OCI images on GHCR
 - ✅ SHA256 checksums for verification
 
 ## Download
 
-Download the latest release from [Releases](https://github.com/Michaol/caddy-naive/releases/latest).
+Two distribution channels are available:
+
+- **Binary**: latest release on [Releases](https://github.com/yv-code/caddy-naive-build/releases/latest)
+- **Docker image**: `ghcr.io/yv-code/caddy-naive-build:latest` (also tagged with the upstream Caddy version, e.g. `v2.10.0`)
 
 ### Supported Platforms
 
 - Linux x64
 - Linux arm64
+
+## Docker
+
+Multi-arch images are published to GitHub Container Registry on every successful build.
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/yv-code/caddy-naive-build:latest
+
+# Or pin to a specific Caddy version
+docker pull ghcr.io/yv-code/caddy-naive-build:v2.10.0
+
+# Verify the forwardproxy plugin is included
+docker run --rm ghcr.io/yv-code/caddy-naive-build:latest \
+    caddy list-modules | grep forward_proxy
+```
+
+### Run with your own Caddyfile
+
+```bash
+docker run -d \
+    --name caddy \
+    -p 80:80 -p 443:443 -p 443:443/udp \
+    -v $PWD/Caddyfile:/etc/caddy/Caddyfile:ro \
+    -v caddy_data:/data \
+    -v caddy_config:/config \
+    ghcr.io/yv-code/caddy-naive-build:latest
+```
+
+The image follows the same volume layout as the official `caddy` image:
+
+| Path           | Purpose                                |
+|----------------|----------------------------------------|
+| `/etc/caddy`   | Caddyfile / JSON config                |
+| `/data`        | Auto-managed TLS certificates & state  |
+| `/config`      | Caddy admin / autosaved JSON           |
+| `/srv`         | Default site root (`WORKDIR`)          |
+
+### docker-compose
+
+```yaml
+services:
+  caddy:
+    image: ghcr.io/yv-code/caddy-naive-build:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
+```
 
 ## Quick Start
 
@@ -27,7 +89,7 @@ Download the latest release from [Releases](https://github.com/Michaol/caddy-nai
 
 ```bash
 # Download latest version (x64)
-wget https://github.com/Michaol/caddy-naive/releases/latest/download/caddy-linux-amd64
+wget https://github.com/yv-code/caddy-naive-build/releases/latest/download/caddy-linux-amd64
 
 # Rename and make executable
 mv caddy-linux-amd64 caddy
@@ -78,7 +140,7 @@ chmod +x caddy
 
 ## Build from Source
 
-This repository uses GitHub Actions to automatically build Caddy with the NaiveProxy plugin.
+This repository uses a manually triggered GitHub Actions workflow to build Caddy with the NaiveProxy plugin.
 
 ### Manual Build
 
@@ -94,11 +156,19 @@ xcaddy build --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwa
 ./caddy list-modules | grep forward_proxy
 ```
 
-## Automated Builds
+## Triggering a Build
 
-Builds are triggered:
-- **Manually**: Via GitHub Actions workflow dispatch
-- **Weekly**: Every Sunday at 00:00 UTC (checks for updates)
+Builds are **manual only** — open the [Actions tab](../../actions/workflows/build.yml) and click **Run workflow**.
+
+The workflow exposes the following inputs (all optional):
+
+| Input | Default | Purpose |
+|-------|---------|---------|
+| `caddy_version` | *empty → latest GitHub release* | Caddy version to build, e.g. `v2.10.0` |
+| `forwardproxy_repo` | `github.com/klzgrad/forwardproxy` | Go import path of the forwardproxy module replacement |
+| `forwardproxy_version` | `naive` | Branch / tag / commit of that module |
+
+The same inputs drive both the standalone binary release and the multi-arch GHCR image, so a single dispatch always produces a consistent pair.
 
 ## Verification
 
@@ -106,7 +176,7 @@ Each release includes SHA256 checksums. Verify your download:
 
 ```bash
 # Download checksum file
-wget https://github.com/Michaol/caddy-naive/releases/latest/download/checksums.txt
+wget https://github.com/yv-code/caddy-naive-build/releases/latest/download/checksums.txt
 
 # Verify
 sha256sum -c checksums.txt --ignore-missing

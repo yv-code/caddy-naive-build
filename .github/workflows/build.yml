@@ -2,43 +2,58 @@ name: Build Caddy with NaiveProxy
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * 0" # 每周日 UTC 00:00 检查更新
+    inputs:
+      caddy_version:
+        description: "Caddy version to build (empty = latest GitHub release, e.g. v2.10.0)"
+        required: false
+        default: ""
+        type: string
+      forwardproxy_repo:
+        description: "forwardproxy module replacement repo (Go import path, no scheme)"
+        required: false
+        default: "github.com/klzgrad/forwardproxy"
+        type: string
+      forwardproxy_version:
+        description: "forwardproxy module branch / tag / commit (e.g. naive, v0.0.1, <sha>)"
+        required: false
+        default: "naive"
+        type: string
+
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  check-version:
+  resolve-version:
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
-      caddy_version: ${{ steps.check.outputs.caddy_version }}
+      caddy_version: ${{ steps.resolve.outputs.caddy_version }}
+      forwardproxy_repo: ${{ steps.resolve.outputs.forwardproxy_repo }}
+      forwardproxy_version: ${{ steps.resolve.outputs.forwardproxy_version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Check Caddy version
-        id: check
+      - name: Resolve build inputs
+        id: resolve
         run: |
-          # 获取最新 Caddy 版本
-          LATEST_CADDY=$(curl -s https://api.github.com/repos/caddyserver/caddy/releases/latest | jq -r .tag_name)
-          echo "Latest Caddy version: $LATEST_CADDY"
-          echo "caddy_version=$LATEST_CADDY" >> $GITHUB_OUTPUT
-
-          # 检查是否已经有这个版本的 Release
-          if gh release view "$LATEST_CADDY" --repo ${{ github.repository }} >/dev/null 2>&1; then
-            echo "Release $LATEST_CADDY already exists, skipping build"
-            echo "should_build=false" >> $GITHUB_OUTPUT
+          CADDY_VERSION="${{ inputs.caddy_version }}"
+          if [ -z "$CADDY_VERSION" ]; then
+            CADDY_VERSION=$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest | jq -r .tag_name)
+            echo "Resolved latest Caddy version: $CADDY_VERSION"
           else
-            echo "New version detected, will build"
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Using user-supplied Caddy version: $CADDY_VERSION"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          FP_REPO="${{ inputs.forwardproxy_repo }}"
+          FP_VERSION="${{ inputs.forwardproxy_version }}"
+          echo "forwardproxy module: ${FP_REPO}@${FP_VERSION}"
+
+          {
+            echo "caddy_version=${CADDY_VERSION}"
+            echo "forwardproxy_repo=${FP_REPO}"
+            echo "forwardproxy_version=${FP_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
   build:
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    needs: resolve-version
     strategy:
       matrix:
         include:
@@ -64,24 +79,19 @@ jobs:
       - name: Install xcaddy
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
-      - name: Build Caddy with forwardproxy (naive fork)
+      - name: Build Caddy with forwardproxy
+        env:
+          CADDY_VERSION: ${{ needs.resolve-version.outputs.caddy_version }}
+          FORWARDPROXY_REPO: ${{ needs.resolve-version.outputs.forwardproxy_repo }}
+          FORWARDPROXY_VERSION: ${{ needs.resolve-version.outputs.forwardproxy_version }}
         run: |
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            GOARCH=arm64 ~/go/bin/xcaddy build \
-              --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@naive
-          else
-            ~/go/bin/xcaddy build \
-              --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@naive
-          fi
+          GOARCH=${{ matrix.arch }} ~/go/bin/xcaddy build "${CADDY_VERSION}" \
+            --with "github.com/caddyserver/forwardproxy=${FORWARDPROXY_REPO}@${FORWARDPROXY_VERSION}"
 
-      - name: Get Caddy version
+      - name: Record Caddy version
         id: caddy_version
         run: |
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            CADDY_VERSION="${{ needs.check-version.outputs.caddy_version }}"
-          else
-            CADDY_VERSION=$(./caddy version | head -n1 | awk '{print $1}')
-          fi
+          CADDY_VERSION="${{ needs.resolve-version.outputs.caddy_version }}"
           echo "version=${CADDY_VERSION}" >> $GITHUB_OUTPUT
           echo "Caddy version: ${CADDY_VERSION}"
 
@@ -104,8 +114,71 @@ jobs:
             caddy-${{ matrix.name }}
             caddy-${{ matrix.name }}.sha256
 
+  docker:
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name (lowercase)
+        id: image
+        run: |
+          IMAGE="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "name=${IMAGE}" >> $GITHUB_OUTPUT
+          echo "Image: ${IMAGE}"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.resolve-version.outputs.caddy_version }}
+          labels: |
+            org.opencontainers.image.title=Caddy with NaiveProxy
+            org.opencontainers.image.description=Caddy server built with the NaiveProxy forwardproxy plugin
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.resolve-version.outputs.caddy_version }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CADDY_VERSION=${{ needs.resolve-version.outputs.caddy_version }}
+            FORWARDPROXY_REPO=${{ needs.resolve-version.outputs.forwardproxy_repo }}
+            FORWARDPROXY_VERSION=${{ needs.resolve-version.outputs.forwardproxy_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   release:
-    needs: [check-version, build]
+    needs: [resolve-version, build, docker]
     runs-on: ubuntu-latest
 
     steps:
@@ -131,11 +204,7 @@ jobs:
       - name: Get version
         id: version
         run: |
-          VERSION="${{ needs.check-version.outputs.caddy_version }}"
-          if [ -z "$VERSION" ]; then
-            chmod +x release/caddy-linux-amd64
-            VERSION=$(release/caddy-linux-amd64 version | head -n1 | awk '{print $1}')
-          fi
+          VERSION="${{ needs.resolve-version.outputs.caddy_version }}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "Release version: ${VERSION}"
@@ -189,7 +258,8 @@ jobs:
 
             Built with:
             ```bash
-            xcaddy build --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@naive
+            xcaddy build ${{ steps.version.outputs.version }} \
+              --with github.com/caddyserver/forwardproxy=${{ needs.resolve-version.outputs.forwardproxy_repo }}@${{ needs.resolve-version.outputs.forwardproxy_version }}
             ```
 
             ### Verification

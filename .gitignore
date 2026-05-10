@@ -1,6 +1,8 @@
 # Caddy configuration files
 Caddyfile
 *.caddyfile
+# But keep the default Caddyfile baked into the docker image
+!/Caddyfile
 
 # Certificates
 *.cer
